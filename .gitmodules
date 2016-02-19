@@ -1,0 +1,3 @@
+[submodule "dugong"]
+	path = dugong
+	url = https://github.com/matthewbridges/dugong.git
