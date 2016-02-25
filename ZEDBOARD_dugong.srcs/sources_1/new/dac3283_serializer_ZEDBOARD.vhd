@@ -29,19 +29,17 @@ entity dac3283_serializer is
 end entity dac3283_serializer;
 
 architecture RTL of dac3283_serializer is
-	signal fmc150_clk_b      : std_logic;
+	signal fmc150_clk_b : std_logic;
+
 	--Phase Locked Loop
-	signal dac_clk_X4        : std_logic;
-	signal dac_clk_X1        : std_logic;
-	signal dac_clk_DIV4      : std_logic;
-	signal clk_fb_out        : std_logic;
-	signal pll_locked        : std_logic;
-	--
-	signal dac_clk_b         : std_logic;
-	--PLL Buffers
-	signal dac_io_clk        : std_logic;
-	signal dac_serdesstrobe  : std_logic;
-	signal dac_bufpll_locked : std_logic;
+	signal dac_clk_X2   : std_logic;
+	signal dac_clk_X1   : std_logic;
+	signal dac_clk_DIV4 : std_logic;
+	signal clk_fb_out   : std_logic;
+	signal pll_locked   : std_logic;
+	--Buffer Signals
+	signal dac_clk_X1_b : std_logic;
+	signal dac_clk_X2_b : std_logic;
 
 	signal reset        : std_logic;
 	signal tx_en        : std_logic;
@@ -66,16 +64,31 @@ architecture RTL of dac3283_serializer is
 --constant test_pat_i : test_signal_type := (x"0000", x"5A82", x"7FFF", x"5A82", x"0000", x"A57D", x"8000", x"A57D");
 --constant test_pat_q : test_signal_type := (x"7FFF", x"5A82", x"0000", x"A57D", x"8000", X"A57D", x"0000", x"5A82");
 
+	signal io_test_en_SR : std_logic_vector(2 downto 0) := (others => '0');
+
+	attribute ASYNC_REG : string;
+	attribute shreg_extract : string;
+
+	attribute ASYNC_REG of io_test_en_SR : signal is "true";
+	attribute shreg_extract of io_test_en_SR : signal is "no";
+
 begin
+	IO_TEST_EN_CROSS_CLK_proc : process(dac_clk_X1_b) is
+	begin
+		if rising_edge(dac_clk_X1_b) then
+			io_test_en_SR(0)          <= IO_TEST_EN;
+			io_test_en_SR(2 downto 1) <= io_test_en_SR(1 downto 0);
+		end if;
+	end process IO_TEST_EN_CROSS_CLK_proc;
 
 	----------------------------Input Interface----------------------------
 
 	reset <= RST_I or not (pll_locked);
 
-	process(dac_clk_b)
+	process(dac_clk_X1_b)
 	begin
 		--Perform Clock Rising Edge operations
-		if (rising_edge(dac_clk_b)) then
+		if (rising_edge(dac_clk_X1_b)) then
 			if (reset = '1') then
 				DAC_READY    <= '0';
 				i            <= (others => '0');
@@ -86,7 +99,7 @@ begin
 				tx_en        <= '0';
 			else
 				DAC_READY <= '1';
-				if (IO_TEST_EN = '1') then
+				if (io_test_en_SR(2) = '1') then
 					i <= test_pat_i(to_integer(sample_count)); --CH_A_I;
 					q <= test_pat_q(to_integer(sample_count)); --CH_B_I;
 				else
@@ -108,15 +121,10 @@ begin
 
 	----------------------------SET UP CLOCKING AND PLLs----------------------------
 
-	fmc150_clk_BUFIO2 : BUFIO2
-		generic map(
-			DIVIDE_BYPASS => TRUE
-		)
+	FMC150_CLK_BUFG : BUFG
 		port map(
-			DIVCLK       => fmc150_clk_b,
-			IOCLK        => open,
-			SERDESSTROBE => open,
-			I            => FMC150_CLK
+			O => fmc150_clk_b,
+			I => FMC150_CLK
 		);
 
 	dac_clk_PLL_BASE : PLL_BASE
@@ -126,7 +134,7 @@ begin
 			CLKFBOUT_PHASE        => 0.0, -- Phase offset in degrees of the clock feedback output (0.0-360.0).
 			CLKIN_PERIOD          => 4.069, -- Input clock period in ns to ps resolution (i.e. 33.333 is 30 MHz).
 			-- CLKOUT0_DIVIDE - CLKOUT5_DIVIDE: Divide amount for CLKOUT# clock output (1-128)
-			CLKOUT0_DIVIDE        => 1,
+			CLKOUT0_DIVIDE        => 2,
 			CLKOUT1_DIVIDE        => 4,
 			CLKOUT2_DIVIDE        => 16,
 			CLKOUT3_DIVIDE        => 1,
@@ -155,7 +163,7 @@ begin
 		port map(
 			CLKFBOUT => clk_fb_out,     -- 1-bit output: PLL_BASE feedback output
 			-- CLKOUT0 - CLKOUT5: 1-bit (each) output: Clock outputs
-			CLKOUT0  => dac_clk_X4,
+			CLKOUT0  => dac_clk_X2,
 			CLKOUT1  => dac_clk_X1,
 			CLKOUT2  => dac_clk_DIV4,
 			CLKOUT3  => open,
@@ -167,10 +175,16 @@ begin
 			RST      => RST_I           -- 1-bit input: Reset input
 		);
 
-	dac_clk_BUFG : BUFG
+	dac_clk_X1_BUFG : BUFG
 		port map(
-			O => dac_clk_b,
+			O => dac_clk_X1_b,
 			I => dac_clk_X1
+		);
+
+	dac_clk_X2_BUFIO : BUFIO
+		port map(
+			O => dac_clk_X2_b,
+			I => dac_clk_X2
 		);
 
 	dac_clk_DIV4_BUFG : BUFG
@@ -179,61 +193,54 @@ begin
 			I => dac_clk_DIV4
 		);
 
-	dac_io_BUFPLL : BUFPLL
-		generic map(
-			DIVIDE      => 4,           -- DIVCLK divider (1-8)
-			ENABLE_SYNC => TRUE         -- Enable synchrnonization between PLL and GCLK (TRUE/FALSE)
-		)
-		port map(
-			IOCLK        => dac_io_clk, -- 1-bit output: Output I/O clock
-			LOCK         => dac_bufpll_locked, -- 1-bit output: Synchronized LOCK output
-			SERDESSTROBE => dac_serdesstrobe, -- 1-bit output: Output SERDES strobe (connect to ISERDES2/OSERDES2)
-			GCLK         => dac_clk_b,  -- 1-bit input: BUFG clock input
-			LOCKED       => pll_locked, -- 1-bit input: LOCKED input from PLL
-			PLLIN        => DAC_CLK_X4  -- 1-bit input: Clock input from PLL
-		);
-
 	----------------------------DATA_CLOCK IO AND BUFFERING----------------------------
 
-	DAC_DCLK_OSERDES2 : OSERDES2
+	DAC_DCLK_OSERDES2 : OSERDESE2
 		generic map(
-			BYPASS_GCLK_FF => FALSE,    -- Bypass CLKDIV syncronization registers (TRUE/FALSE)
-			DATA_RATE_OQ   => "SDR",    -- Output Data Rate ("SDR" or "DDR")
-			DATA_RATE_OT   => "SDR",    -- 3-state Data Rate ("SDR" or "DDR")
-			DATA_WIDTH     => 4,        -- Parallel data width (2-8)
-			OUTPUT_MODE    => "SINGLE_ENDED", -- "SINGLE_ENDED" or "DIFFERENTIAL"
-			SERDES_MODE    => "NONE",   -- "NONE", "MASTER" or "SLAVE"
-			TRAIN_PATTERN  => 0         -- Training Pattern (0-15)
+			DATA_RATE_OQ   => "DDR",    -- DDR, SDR
+			DATA_RATE_TQ   => "DDR",    -- DDR, BUF, SDR
+			DATA_WIDTH     => 4,        -- Parallel data width (2-8,10,14)
+			INIT_OQ        => '0',      -- Initial value of OQ output (1'b0,1'b1)
+			INIT_TQ        => '0',      -- Initial value of TQ output (1'b0,1'b1)
+			SERDES_MODE    => "MASTER", -- MASTER, SLAVE
+			SRVAL_OQ       => '0',      -- OQ output value when SR is used (1'b0,1'b1)
+			SRVAL_TQ       => '0',      -- TQ output value when SR is used (1'b0,1'b1)
+			TBYTE_CTL      => "FALSE",  -- Enable tristate byte operation (FALSE, TRUE)
+			TBYTE_SRC      => "FALSE",  -- Tristate byte source (FALSE, TRUE)
+			TRISTATE_WIDTH => 4         -- 3-state converter width (1,4)
 		)
 		port map(
-			OQ        => dac_dclk_o,    -- 1-bit output: Data output to pad or IODELAY2
-			SHIFTOUT1 => open,          -- 1-bit output: Cascade data output
-			SHIFTOUT2 => open,          -- 1-bit output: Cascade 3-state output
-			SHIFTOUT3 => open,          -- 1-bit output: Cascade differential data output
-			SHIFTOUT4 => open,          -- 1-bit output: Cascade differential 3-state output
-			TQ        => open,          -- 1-bit output: 3-state output to pad or IODELAY2
-			CLK0      => dac_io_clk,    -- 1-bit input: I/O clock input
-			CLK1      => '0',           -- 1-bit input: Secondary I/O clock input
-			CLKDIV    => dac_clk_b,     -- 1-bit input: Logic domain clock input
-			-- D1 - D4: 1-bit (each) input: Parallel data inputs
+			OFB       => open,          -- 1-bit output: Feedback path for data
+			OQ        => dac_dclk_o,    -- 1-bit output: Data path output
+			-- SHIFTOUT1 / SHIFTOUT2: 1-bit (each) output: Data output expansion (1-bit each)
+			SHIFTOUT1 => open,
+			SHIFTOUT2 => open,
+			TBYTEOUT  => open,          -- 1-bit output: Byte group tristate
+			TFB       => open,          -- 1-bit output: 3-state control
+			TQ        => open,          -- 1-bit output: 3-state control
+			CLK       => dac_clk_X2_b,  -- 1-bit input: High speed clock
+			CLKDIV    => dac_clk_X1_b,  -- 1-bit input: Divided clock
+			-- D1 - D8: 1-bit (each) input: Parallel data inputs (1-bit each)
 			D1        => '1',
 			D2        => '0',
 			D3        => '1',
 			D4        => '0',
-			IOCE      => dac_serdesstrobe, -- 1-bit input: Data strobe input
-			OCE       => tx_en,         -- 1-bit input: Clock enable input
-			RST       => '0',           -- 1-bit input: Asynchrnous reset input
-			SHIFTIN1  => '1',           -- 1-bit input: Cascade data input
-			SHIFTIN2  => '1',           -- 1-bit input: Cascade 3-state input
-			SHIFTIN3  => '1',           -- 1-bit input: Cascade differential data input
-			SHIFTIN4  => '1',           -- 1-bit input: Cascade differential 3-state input
-			-- T1 - T4: 1-bit (each) input: 3-state control inputs
+			D5        => '0',
+			D6        => '0',
+			D7        => '0',
+			D8        => '0',
+			OCE       => tx_en,         -- 1-bit input: Output data clock enable
+			RST       => '0',           -- 1-bit input: Reset
+			-- SHIFTIN1 / SHIFTIN2: 1-bit (each) input: Data input expansion (1-bit each)
+			SHIFTIN1  => '1',
+			SHIFTIN2  => '1',
+			-- T1 - T4: 1-bit (each) input: Parallel 3-state inputs
 			T1        => '0',
 			T2        => '0',
 			T3        => '0',
 			T4        => '0',
-			TCE       => '0',           -- 1-bit input: 3-state clock enable input
-			TRAIN     => '0'            -- 1-bit input: Training pattern enable input
+			TBYTEIN   => '0',           -- 1-bit input: Byte group tristate
+			TCE       => '0'            -- 1-bit input: 3-state clock enable
 		);
 
 	DAC_DCLK_OBUFDS : OBUFDS
@@ -250,47 +257,53 @@ begin
 
 	DAC_DATA_pins : for pin_count in 7 downto 0 generate
 	begin
-		DAC_DATA_OSERDES2 : OSERDES2
+		DAC_DCLK_OSERDES2 : OSERDESE2
 			generic map(
-				BYPASS_GCLK_FF => FALSE, -- Bypass CLKDIV syncronization registers (TRUE/FALSE)
-				DATA_RATE_OQ   => "SDR", -- Output Data Rate ("SDR" or "DDR")
-				DATA_RATE_OT   => "SDR", -- 3-state Data Rate ("SDR" or "DDR")
-				DATA_WIDTH     => 4,    -- Parallel data width (2-8)
-				OUTPUT_MODE    => "SINGLE_ENDED", -- "SINGLE_ENDED" or "DIFFERENTIAL"
-				SERDES_MODE    => "NONE", -- "NONE", "MASTER" or "SLAVE"
-				TRAIN_PATTERN  => 0     -- Training Pattern (0-15)
+				DATA_RATE_OQ   => "DDR", -- DDR, SDR
+				DATA_RATE_TQ   => "DDR", -- DDR, BUF, SDR
+				DATA_WIDTH     => 4,    -- Parallel data width (2-8,10,14)
+				INIT_OQ        => '0',  -- Initial value of OQ output (1'b0,1'b1)
+				INIT_TQ        => '0',  -- Initial value of TQ output (1'b0,1'b1)
+				SERDES_MODE    => "MASTER", -- MASTER, SLAVE
+				SRVAL_OQ       => '0',  -- OQ output value when SR is used (1'b0,1'b1)
+				SRVAL_TQ       => '0',  -- TQ output value when SR is used (1'b0,1'b1)
+				TBYTE_CTL      => "FALSE", -- Enable tristate byte operation (FALSE, TRUE)
+				TBYTE_SRC      => "FALSE", -- Tristate byte source (FALSE, TRUE)
+				TRISTATE_WIDTH => 4     -- 3-state converter width (1,4)
 			)
 			port map(
-				OQ        => dac_dat_o(pin_count), -- 1-bit output: Data output to pad or IODELAY2
-				SHIFTOUT1 => open,      -- 1-bit output: Cascade data output
-				SHIFTOUT2 => open,      -- 1-bit output: Cascade 3-state output
-				SHIFTOUT3 => open,      -- 1-bit output: Cascade differential data output
-				SHIFTOUT4 => open,      -- 1-bit output: Cascade differential 3-state output
-				TQ        => open,      -- 1-bit output: 3-state output to pad or IODELAY2
-				CLK0      => dac_io_clk, -- 1-bit input: I/O clock input
-				CLK1      => '0',       -- 1-bit input: Secondary I/O clock input
-				CLKDIV    => dac_clk_b, -- 1-bit input: Logic domain clock input
-				-- D1 - D4: 1-bit (each) input: Parallel data inputs
+				OFB       => open,      -- 1-bit output: Feedback path for data
+				OQ        => dac_dat_o(pin_count), -- 1-bit output: Data path output
+				-- SHIFTOUT1 / SHIFTOUT2: 1-bit (each) output: Data output expansion (1-bit each)
+				SHIFTOUT1 => open,
+				SHIFTOUT2 => open,
+				TBYTEOUT  => open,      -- 1-bit output: Byte group tristate
+				TFB       => open,      -- 1-bit output: 3-state control
+				TQ        => open,      -- 1-bit output: 3-state control
+				CLK       => dac_clk_X2_b, -- 1-bit input: High speed clock
+				CLKDIV    => dac_clk_X1_b, -- 1-bit input: Divided clock
+				-- D1 - D8: 1-bit (each) input: Parallel data inputs (1-bit each)
 				D1        => i(pin_count + 8),
 				D2        => i(pin_count),
 				D3        => q(pin_count + 8),
 				D4        => q(pin_count),
-				IOCE      => dac_serdesstrobe, -- 1-bit input: Data strobe input
-				OCE       => tx_en,     -- 1-bit input: Clock enable input
-				RST       => '0',       -- 1-bit input: Asynchrnous reset input
-				SHIFTIN1  => '1',       -- 1-bit input: Cascade data input
-				SHIFTIN2  => '1',       -- 1-bit input: Cascade 3-state input
-				SHIFTIN3  => '1',       -- 1-bit input: Cascade differential data input
-				SHIFTIN4  => '1',       -- 1-bit input: Cascade differential 3-state input
-				-- T1 - T4: 1-bit (each) input: 3-state control inputs
+				D5        => '0',
+				D6        => '0',
+				D7        => '0',
+				D8        => '0',
+				OCE       => tx_en,     -- 1-bit input: Output data clock enable
+				RST       => '0',       -- 1-bit input: Reset
+				-- SHIFTIN1 / SHIFTIN2: 1-bit (each) input: Data input expansion (1-bit each)
+				SHIFTIN1  => '1',
+				SHIFTIN2  => '1',
+				-- T1 - T4: 1-bit (each) input: Parallel 3-state inputs
 				T1        => '0',
 				T2        => '0',
 				T3        => '0',
 				T4        => '0',
-				TCE       => '0',       -- 1-bit input: 3-state clock enable input
-				TRAIN     => '0'        -- 1-bit input: Training pattern enable input
+				TBYTEIN   => '0',       -- 1-bit input: Byte group tristate
+				TCE       => '0'        -- 1-bit input: 3-state clock enable
 			);
-
 		DAC_DATA_OBUFDS : OBUFDS
 			generic map(
 				IOSTANDARD => "LVDS_25"
@@ -305,45 +318,52 @@ begin
 
 	----------------------------FRAME IO AND BUFFERING----------------------------
 
-	FRAME_OSERDES2 : OSERDES2
+	FRAME_OSERDES2 : OSERDESE2
 		generic map(
-			BYPASS_GCLK_FF => FALSE,    -- Bypass CLKDIV syncronization registers (TRUE/FALSE)
-			DATA_RATE_OQ   => "SDR",    -- Output Data Rate ("SDR" or "DDR")
-			DATA_RATE_OT   => "SDR",    -- 3-state Data Rate ("SDR" or "DDR")
-			DATA_WIDTH     => 4,        -- Parallel data width (2-8)
-			OUTPUT_MODE    => "SINGLE_ENDED", -- "SINGLE_ENDED" or "DIFFERENTIAL"
-			SERDES_MODE    => "NONE",   -- "NONE", "MASTER" or "SLAVE"
-			TRAIN_PATTERN  => 0         -- Training Pattern (0-15)
+			DATA_RATE_OQ   => "DDR",    -- DDR, SDR
+			DATA_RATE_TQ   => "DDR",    -- DDR, BUF, SDR
+			DATA_WIDTH     => 4,        -- Parallel data width (2-8,10,14)
+			INIT_OQ        => '0',      -- Initial value of OQ output (1'b0,1'b1)
+			INIT_TQ        => '0',      -- Initial value of TQ output (1'b0,1'b1)
+			SERDES_MODE    => "MASTER", -- MASTER, SLAVE
+			SRVAL_OQ       => '0',      -- OQ output value when SR is used (1'b0,1'b1)
+			SRVAL_TQ       => '0',      -- TQ output value when SR is used (1'b0,1'b1)
+			TBYTE_CTL      => "FALSE",  -- Enable tristate byte operation (FALSE, TRUE)
+			TBYTE_SRC      => "FALSE",  -- Tristate byte source (FALSE, TRUE)
+			TRISTATE_WIDTH => 4         -- 3-state converter width (1,4)
 		)
 		port map(
-			OQ        => frame_o,       -- 1-bit output: Data output to pad or IODELAY2
-			SHIFTOUT1 => open,          -- 1-bit output: Cascade data output
-			SHIFTOUT2 => open,          -- 1-bit output: Cascade 3-state output
-			SHIFTOUT3 => open,          -- 1-bit output: Cascade differential data output
-			SHIFTOUT4 => open,          -- 1-bit output: Cascade differential 3-state output
-			TQ        => open,          -- 1-bit output: 3-state output to pad or IODELAY2
-			CLK0      => dac_io_clk,    -- 1-bit input: I/O clock input
-			CLK1      => '0',           -- 1-bit input: Secondary I/O clock input
-			CLKDIV    => dac_clk_b,     -- 1-bit input: Logic domain clock input
-			-- D1 - D4: 1-bit (each) input: Parallel data inputs
+			OFB       => open,          -- 1-bit output: Feedback path for data
+			OQ        => frame_o,       -- 1-bit output: Data path output
+			-- SHIFTOUT1 / SHIFTOUT2: 1-bit (each) output: Data output expansion (1-bit each)
+			SHIFTOUT1 => open,
+			SHIFTOUT2 => open,
+			TBYTEOUT  => open,          -- 1-bit output: Byte group tristate
+			TFB       => open,          -- 1-bit output: 3-state control
+			TQ        => open,          -- 1-bit output: 3-state control
+			CLK       => dac_clk_X2_b,  -- 1-bit input: High speed clock
+			CLKDIV    => dac_clk_X1_b,  -- 1-bit input: Divided clock
+			-- D1 - D8: 1-bit (each) input: Parallel data inputs (1-bit each)
 			D1        => frame,
 			D2        => frame,
 			D3        => frame,
 			D4        => frame,
-			IOCE      => dac_serdesstrobe, -- 1-bit input: Data strobe input
-			OCE       => tx_en,         -- 1-bit input: Clock enable input
-			RST       => '0',           -- 1-bit input: Asynchrnous reset input
-			SHIFTIN1  => '1',           -- 1-bit input: Cascade data input
-			SHIFTIN2  => '1',           -- 1-bit input: Cascade 3-state input
-			SHIFTIN3  => '1',           -- 1-bit input: Cascade differential data input
-			SHIFTIN4  => '1',           -- 1-bit input: Cascade differential 3-state input
-			-- T1 - T4: 1-bit (each) input: 3-state control inputs
+			D5        => '0',
+			D6        => '0',
+			D7        => '0',
+			D8        => '0',
+			OCE       => tx_en,         -- 1-bit input: Output data clock enable
+			RST       => '0',           -- 1-bit input: Reset
+			-- SHIFTIN1 / SHIFTIN2: 1-bit (each) input: Data input expansion (1-bit each)
+			SHIFTIN1  => '1',
+			SHIFTIN2  => '1',
+			-- T1 - T4: 1-bit (each) input: Parallel 3-state inputs
 			T1        => '0',
 			T2        => '0',
 			T3        => '0',
 			T4        => '0',
-			TCE       => '0',           -- 1-bit input: 3-state clock enable input
-			TRAIN     => '0'            -- 1-bit input: Training pattern enable input
+			TBYTEIN   => '0',           -- 1-bit input: Byte group tristate
+			TCE       => '0'            -- 1-bit input: 3-state clock enable
 		);
 
 	FRAME_OBUFDS : OBUFDS
@@ -359,6 +379,6 @@ begin
 	----------------------------OTHER SIGNAL ASSIGNMENT AND DEBUGING----------------------------
 
 
-	DAC_CLK_O <= dac_clk_b;
+	DAC_CLK_O <= dac_clk_X1_b;
 
 end architecture RTL;
