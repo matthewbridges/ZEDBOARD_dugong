@@ -83,16 +83,7 @@ begin
 	SYS_PWR_ON <= '1';
 
 	-- Input buffering
-	SYS_CLK_IBUFGDS : IBUFGDS
-		generic map(
-			DIFF_TERM  => FALSE,
-			IOSTANDARD => "LVPECL_33"
-		)
-		port map(
-			O  => sys_clk_b,
-			I  => SYS_CLK_P,
-			IB => SYS_CLK_N
-		);
+	sys_clk_b <= SYS_CLK_P;
 
 	-- System PLL 
 	SYS_CLK_PLL_BASE : PLL_BASE
